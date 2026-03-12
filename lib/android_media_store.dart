@@ -28,11 +28,17 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-/// A custom exception thrown when a native AndroidMediaStore operation fails.
+/// A custom exception thrown when a native MediaStore operation fails.
+///
+/// This encompasses issues like:
+/// * Lack of permissions to access a specific file.
+/// * The user cancelling a system-provided permission dialog.
+/// * Hardware or OS-level errors during file I/O.
+/// * File size limits exceeded (e.g., 1MB limit for direct memory reads).
 class AndroidMediaStoreException implements Exception {
   AndroidMediaStoreException(this.code, this.message);
 
-  /// The error code returned from the native platform.
+  /// The error code returned from the native platform (e.g., 'PERMISSION_DENIED', 'FILE_TOO_LARGE').
   final String code;
 
   /// The descriptive error message.
@@ -43,6 +49,10 @@ class AndroidMediaStoreException implements Exception {
 }
 
 /// A helper class to manage asynchronous media operations that may require
+///
+/// On Android 11+ (API 30+), many MediaStore operations (like editing or deleting
+/// files owned by other apps) require a system-level confirmation dialog. This class
+/// bridges the gap between the initial method call and the eventual callback from
 /// user permission via OS-level dialogs (e.g., Android 11+ Scoped Storage).
 class MediaOperation<T> {
   MediaOperation();
@@ -55,6 +65,8 @@ class MediaOperation<T> {
   Completer<T>? get completer => _completer.value;
 
   /// Resets the operation state, optionally throwing an error to the waiting Future and onFail callback.
+  ///
+  /// This is used for cleanup when a request is cancelled or times out.
   void reset({Exception? error}) {
     final failCb = _onFail;
     
@@ -70,6 +82,9 @@ class MediaOperation<T> {
   }
 
   /// Initiates a new operation with a timeout and callbacks.
+  ///
+  /// If a previous operation is still active, it will be cancelled with a [TimeoutException]
+  /// to prevent resource leaks and state confusion.
   void set(
     Completer<T> newCompleter, {
     void Function(T)? onSuccess,
@@ -89,6 +104,8 @@ class MediaOperation<T> {
   }
 
   /// Completes the operation successfully, triggering the onSuccess callback.
+  ///
+  /// Cancels any active timeout timers and clears the internal callback references.
   void complete(T result) {
     final successCb = _onSuccess;
     
@@ -110,8 +127,15 @@ class MediaOperation<T> {
 }
 
 /// A utility class bridging Flutter to Android's MediaStore and Scoped Storage APIs.
-/// It provides safe, modern methods to create, read, edit, and delete media files
-/// while adhering to Android 10+ storage restrictions.
+///
+/// This singleton provides a modern, high-level API for interacting with media files
+/// while abstracting the complexities of Android 10+ (API 29+) Scoped Storage and
+/// the 1MB Binder transaction limit.
+///
+/// Key responsibilities:
+/// * Mapping between `content://` URIs and physical paths.
+/// * Managing asynchronous permission dialogs for file modifications.
+/// * Handling OOM prevention via streaming for large files.
 class AndroidMediaStore {
   AndroidMediaStore._();
 
@@ -126,6 +150,9 @@ class AndroidMediaStore {
   static final StreamController<bool> _permissionStreamController =
       StreamController<bool>.broadcast();
 
+  /// A broadcast stream that emits the status of the `MANAGE_MEDIA` special permission.
+  ///
+  /// Listen to this to react when a user returns from the system settings screen.
   Stream<bool> get onManageMediaPermissionChanged =>
       _permissionStreamController.stream;
 
@@ -141,11 +168,14 @@ class AndroidMediaStore {
     return '${DateTime.now().millisecondsSinceEpoch}_$_requestIdCounter';
   }
 
+  /// Retrieves the current Android SDK version string.
   Future<String?> getPlatformVersion() async {
     return await mediaChannel.invokeMethod('getPlatformVersion');
   }
 
   /// Ensures the MethodChannel and its native callbacks are properly registered.
+  ///
+  /// This method sets up the `notifyCreateComplete` and `notifyDeleteComplete` listeners.
   /// Safe to call multiple times.
   static Future<void> ensureInitialized() async {
     if (!Platform.isAndroid) return;
@@ -207,6 +237,9 @@ class AndroidMediaStore {
   }
 
   /// Checks if the native MethodChannel is ready to accept commands.
+  ///
+  /// Returns `true` if the native plugin side has finished its setup.
+  /// Throws [AndroidMediaStoreException] if the channel is unreachable.
   static Future<bool?> isChannelInitialized() async {
     try {
       return await mediaChannel.invokeMethod('isInitialized');
@@ -216,6 +249,9 @@ class AndroidMediaStore {
   }
 
   /// Converts a file system path to a MediaStore or FileProvider compatible URI.
+  ///
+  /// Providing a [mimeType] (e.g., 'image/jpeg') significantly improves the
+  /// lookup accuracy and speed. Returns `null` if the path cannot be mapped.
   Future<String?> pathToUri(String path, {String? mimeType}) async {
     try {
       await ensureInitialized();
@@ -229,6 +265,9 @@ class AndroidMediaStore {
   }
 
   /// Converts a MediaStore or FileProvider URI back to a file system path.
+  ///
+  /// Note: On Android 10+, returned paths may have restricted access.
+  /// Use [getReadableMediaFilePath] for reliable read access.
   Future<String?> uriToPath(String uri) async {
     try {
       await ensureInitialized();
@@ -239,6 +278,13 @@ class AndroidMediaStore {
   }
 
   /// Safely resolves a media file into a physical, readable file path.
+  ///
+  /// If the input is a `content://` URI, the plugin will stream the content
+  /// into a temporary file in the app's cache directory. This is the **preferred
+  /// way to handle large files (Videos, Hi-Res Images)** to avoid memory crashes.
+  ///
+  /// **Warning:** You are responsible for deleting the file at the returned path
+  /// once you are finished with it to prevent storage bloat.
   Future<String?> getReadableMediaFilePath(String pathOrUri) async {
     try {
       await ensureInitialized();
@@ -251,6 +297,13 @@ class AndroidMediaStore {
   }
 
   /// Reads the complete binary content of a media file.
+  ///
+  /// **Performance Note:** This method has a built-in safety limit of 1MB.
+  /// If the file is larger than 1MB, it automatically falls back to the
+  /// streaming/cache method ([getReadableMediaFilePath]) to prevent
+  /// `TransactionTooLargeException` and `OutOfMemoryError`.
+  ///
+  /// Returns a [Uint8List] of the file content, or `null` if the file is inaccessible.
   Future<Uint8List?> readMediaFile(String pathOrUri, {String? mimeType}) async {
     try {
       await ensureInitialized();
@@ -279,6 +332,12 @@ class AndroidMediaStore {
   // ---------------------------------------------------------------------------
 
   /// Overwrites an existing media file with new binary data.
+  ///
+  /// If the app does not have write access to the file (common in Scoped Storage),
+  /// this will automatically trigger a system permission dialog.
+  ///
+  /// * [onSuccess]: Called with the URI of the edited file.
+  /// * [onFail]: Called if the user denies permission or an I/O error occurs.
   Future<String?> editMediaFile(
     String pathOrUri,
     List<int> data, {
@@ -325,6 +384,11 @@ class AndroidMediaStore {
   }
 
   /// Permanently deletes a media file from storage.
+  ///
+  /// On Android 11+, if the file is not owned by the app, a system dialog
+  /// will appear asking the user to confirm the deletion.
+  ///
+  /// Returns `true` if the file was deleted successfully.
   Future<bool> deleteMediaFile(
     String pathOrUri, {
     void Function(bool)? onSuccess,
@@ -367,6 +431,13 @@ class AndroidMediaStore {
   }
 
   /// Creates a new media file in a specific MediaStore relative directory.
+  ///
+  /// [relativePath] should be a standard Android directory like `Documents/` or `Download/`.
+  /// Subdirectories are supported (e.g., `Documents/MyProject/`).
+  ///
+  /// This method handles the creation of the MediaStore entry and writes the
+  /// initial [data] to it. Returns the `content://` URI of the new file.
+  /// Throws [AndroidMediaStoreException] if the directory is restricted.
   Future<String?> createMediaFileAtRelative(
     String displayName,
     String relativePath,
@@ -414,6 +485,11 @@ class AndroidMediaStore {
   }
 
   /// Creates a new media file with automatic directory selection.
+  ///
+  /// The plugin will automatically choose the best destination based on the [mimeType].
+  /// For example, `image/jpeg` will go to `Pictures/`, and `audio/mpeg` will go to `Music/`.
+  ///
+  /// Returns the `content://` URI of the newly created file.
   Future<String?> createMediaFile(
     String displayName,
     List<int> data, {
@@ -459,6 +535,11 @@ class AndroidMediaStore {
   }
 
   /// Copies an existing media file to a new location in a specific relative directory.
+  ///
+  /// This is an efficient way to duplicate files within the MediaStore.
+  /// Permission checks are performed automatically.
+  ///
+  /// Returns the URI of the new copy.
   Future<String?> copyMediaFileToRelative(
     String pathOrUri,
     String displayName, {
@@ -506,6 +587,11 @@ class AndroidMediaStore {
   }
 
   /// Copies a media file to a specific destination path or URI.
+  ///
+  /// Use this when you have a specific target destination that might not conform
+  /// to standard relative paths.
+  ///
+  /// Returns the URI of the resulting copy.
   Future<String?> copyMediaFileToPathOrUri(
     String toPathOrUri,
     String fromPathOrUri, {
@@ -551,6 +637,10 @@ class AndroidMediaStore {
   }
 
   /// Checks if the app has been granted the special media management access.
+  ///
+  /// On Android 12+ (API 31+), apps with this permission can modify or delete
+  /// media files without showing a confirmation dialog for every single file.
+  /// Returns `true` on older Android versions as the permission is not applicable.
   Future<bool> canManageMedia() async {
     try {
       await ensureInitialized();
@@ -561,6 +651,10 @@ class AndroidMediaStore {
   }
 
   /// Redirects the user to the system settings screen to grant "Manage Media" access.
+  ///
+  /// You should usually call [canManageMedia] first. Since this opens a system UI,
+  /// use [onManageMediaPermissionChanged] to be notified when the user grants
+  /// the permission and returns to your app.
   Future<void> requestManageMedia() async {
     try {
       await ensureInitialized();
