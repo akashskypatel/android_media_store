@@ -1,3 +1,27 @@
+/*
+ * MIT License
+ * 
+ * Copyright (c) 2026 Akash Patel
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 package com.akashskypatel.android_media_store
 
 import android.app.Activity
@@ -14,7 +38,7 @@ import android.provider.MediaStore
 import android.webkit.MimeTypeMap
 import androidx.annotation.RequiresApi
 import androidx.core.content.FileProvider
-import io.flutter.Log
+import android.util.Log
 import java.io.File
 import java.io.IOException
 import java.io.ByteArrayOutputStream
@@ -53,7 +77,6 @@ class AndroidMediaStore(private val activity: Activity) {
                 }
             }
 
-        // Media directory mappings
         private val MEDIA_DIRECTORIES: Map<String, String> by lazy {
             val baseDirs = mutableMapOf(
                 Environment.DIRECTORY_MUSIC to "Music/",
@@ -76,14 +99,12 @@ class AndroidMediaStore(private val activity: Activity) {
         }
     }
 
-    public val DELETE_REQUEST_CODE = 1001
-    public val WRITE_REQUEST_CODE = 1002
-    public val DELETE_REQUEST_NOTIFY = "notifyDeleteComplete"
-    public val WRITE_REQUEST_NOTIFY = "notifyCreateComplete"
+    // Dynamic Request Codes to handle concurrent requests
+    private var nextRequestCode = 10000
 
-    // Permission operation queue
-    private val pendingWriteOperations = mutableListOf<WriteOperation>()
-    private val pendingDeleteOperations = mutableListOf<DeleteOperation>()
+    // Operation Maps (RequestCode -> Operation)
+    private val pendingWrites = mutableMapOf<Int, WriteOperation>()
+    private val pendingDeletes = mutableMapOf<Int, DeleteOperation>()
 
     data class MediaDetails(
         val displayName: String,
@@ -91,47 +112,22 @@ class AndroidMediaStore(private val activity: Activity) {
         val relativePath: String
     )
 
-    // Now writes to temp cache file when pending user permission.
     data class WriteOperation(
+        val requestId: String,
         val destinationUri: Uri,
         val tempFile: File? = null,
-        val sourceUri: Uri? = null,
-        val onSuccess: ((Uri?) -> Unit)? = null,
-        val onFail: ((Exception) -> Unit)? = null
-    ) {
-        override fun equals(other: Any?): Boolean {
-            if (this === other) return true
-            if (javaClass != other?.javaClass) return false
-
-            other as WriteOperation
-
-            if (destinationUri != other.destinationUri) return false
-            if (tempFile != other.tempFile) return false
-            if (sourceUri != other.sourceUri) return false
-            
-            return true
-        }
-
-        override fun hashCode(): Int {
-            var result = destinationUri.hashCode()
-            result = 31 * result + (tempFile?.hashCode() ?: 0)
-            result = 31 * result + (sourceUri?.hashCode() ?: 0)
-            return result
-        }
-    }
+        val sourceUri: Uri? = null
+    )
 
     data class DeleteOperation(
-        val uri: Uri,
-        val onSuccess: (() -> Unit)? = null,
-        val onFail: ((Exception) -> Unit)? = null
+        val requestId: String,
+        val uri: Uri
     )
 
     // ─────────────────────────────
     // PUBLIC API METHODS
     // ─────────────────────────────
-    fun isInitialized(): Boolean {
-        return true
-    }
+    fun isInitialized(): Boolean = true
 
     fun pathToUri(context: Context, path: String, mimeType: String? = null): Uri? {
         val projection = arrayOf(MediaStore.MediaColumns._ID)
@@ -152,8 +148,7 @@ class AndroidMediaStore(private val activity: Activity) {
             context.contentResolver.query(collection, projection, selection, selectionArgs, null)
                 ?.use { cursor ->
                     if (cursor.moveToFirst()) {
-                        val id =
-                            cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                        val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
                         return Uri.withAppendedPath(collection, id.toString())
                     }
                 }
@@ -203,6 +198,7 @@ class AndroidMediaStore(private val activity: Activity) {
 
     fun editMediaFile(
         context: Context,
+        requestId: String,
         pathOrUri: String,
         data: ByteArray,
     ): Any? {
@@ -213,7 +209,7 @@ class AndroidMediaStore(private val activity: Activity) {
                 clearPending(context, uri)
                 uri
             } catch (e: SecurityException) {
-                handleSecurityExceptionForWrite(context, e, uri, data = data)
+                handleSecurityExceptionForWrite(context, e, requestId, uri, data = data)
                 "PENDING_AUTH"
             }
         }.getOrElse { e ->
@@ -222,35 +218,21 @@ class AndroidMediaStore(private val activity: Activity) {
         }
     }
 
-    /**
-     * Safely resolves a media file into a readable physical file path.
-     * If it's a content:// URI, it streams the content into a temporary cache file
-     * to prevent OOM errors, and returns the path to that cache file.
-     */
-    fun getReadableMediaFilePath(
-        context: Context,
-        pathOrUri: String,
-    ): String? {
+    fun getReadableMediaFilePath(context: Context, pathOrUri: String): String? {
         return runCatching {
             val uri = resolveUriFromString(context, pathOrUri) ?: return pathOrUri
 
-            // If it's already a standard physical file, just return the path
             if (uri.scheme == "file") {
                 return uri.path ?: pathOrUri
             }
 
-            // Create a temporary file in the app's cache directory
-            // Note: You can optionally extract the file extension from the mimeType here
             val tempFile = File(context.cacheDir, "media_cache_${System.currentTimeMillis()}")
-
-            // Stream from the URI to the temp file using an 8KB buffer (prevents OOM)
             context.contentResolver.openInputStream(uri)?.use { input ->
                 tempFile.outputStream().use { output ->
                     input.copyTo(output)
                 }
             } ?: throw IOException("Failed to open input stream for $uri")
 
-            // Return the absolute path of the safely cached file
             tempFile.absolutePath
 
         }.onFailure { e ->
@@ -258,23 +240,14 @@ class AndroidMediaStore(private val activity: Activity) {
         }.getOrNull()
     }
 
-    /**
-     * Reads a small media file directly into memory as a ByteArray.
-     * SAFEGUARD: Aborts if the file is larger than 1MB to prevent OOM 
-     * and Binder TransactionTooLargeException crashes.
-     */
-    fun readMediaFile(
-        context: Context,
-        pathOrUri: String,
-        maxLimitBytes: Int = 1024 * 1024 // 1 MB limit for safe IPC transfer
-    ): ByteArray {
+    fun readMediaFile(context: Context, pathOrUri: String, maxLimitBytes: Int = 1024 * 1024): ByteArray {
         val uri = resolveUriFromString(context, pathOrUri)
         val inputStream = uri?.let { context.contentResolver.openInputStream(it) }
             ?: File(pathOrUri).inputStream()
 
         inputStream.use { input ->
             val buffer = ByteArrayOutputStream()
-            val chunk = ByteArray(8192) // 8KB chunks
+            val chunk = ByteArray(8192)
             var totalRead = 0
             var bytesRead: Int
 
@@ -289,25 +262,27 @@ class AndroidMediaStore(private val activity: Activity) {
         }
     }
 
-    fun deleteMediaFile(context: Context, identifier: String): Any? {
+    fun deleteMediaFile(context: Context, requestId: String, identifier: String): Any? {
         val uri = resolveUriFromString(context, identifier) ?: return false
         return try {
             val deleted = context.contentResolver.delete(uri, null, null) > 0
             if (!deleted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                createDeleteRequest(context, uri)
+                createDeleteRequest(context, requestId, uri)
+                return "PENDING_AUTH"
             }
             true // Handled or queued
         } catch (e: SecurityException) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                createDeleteRequest(context, uri)
+                createDeleteRequest(context, requestId, uri)
                 return "PENDING_AUTH"
             } else if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
                 val rse = e as? RecoverableSecurityException
                 if (rse != null) {
-                    pendingDeleteOperations.add(DeleteOperation(uri))
+                    val requestCode = nextRequestCode++
+                    pendingDeletes[requestCode] = DeleteOperation(requestId, uri)
                     activity.startIntentSenderForResult(
                         rse.userAction.actionIntent.intentSender,
-                        DELETE_REQUEST_CODE, null, 0, 0, 0, null
+                        requestCode, null, 0, 0, 0, null
                     )
                     return "PENDING_AUTH"
                 } else false
@@ -320,6 +295,7 @@ class AndroidMediaStore(private val activity: Activity) {
 
     fun createMediaFileAtRelative(
         context: Context,
+        requestId: String,
         displayName: String,
         relativePath: String? = null,
         data: ByteArray,
@@ -330,22 +306,30 @@ class AndroidMediaStore(private val activity: Activity) {
             val relative = relativePath?.let { validateRelativePath(it) }
             
             if (relative != null && mime != null) {
-                val uri = findOrCreateMediaStoreEntry(context, null, MediaDetails(displayName, mime, relative))
+                val collection = getCollectionForMimeType(mime)
+                var adjustedRelative = relative
+                if (collection == MediaStore.Downloads.EXTERNAL_CONTENT_URI &&
+                    !adjustedRelative.startsWith(Environment.DIRECTORY_DOWNLOADS)
+                ) {
+                    adjustedRelative = "${Environment.DIRECTORY_DOWNLOADS}/$adjustedRelative"
+                }
+
+                val uri = findOrCreateMediaStoreEntry(context, null, MediaDetails(displayName, mime, adjustedRelative))
                 if (uri != null) {
                     try {
                         context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(data) }
                         clearPending(context, uri)
                         uri
                     } catch (e: SecurityException) {
-                        handleSecurityExceptionForWrite(context, e, uri, data = data)
+                        handleSecurityExceptionForWrite(context, e, requestId, uri, data = data)
                         "PENDING_AUTH"
                     }
                 } else {
-                    Log.e(TAG, "Failed to create media entry at $relative: $displayName, $mimeType")
+                    Log.e(TAG, "Failed to create media entry at $adjustedRelative: $displayName, $mimeType")
                     null
                 }
             } else {
-                Log.e(TAG, "Failed to create media file: Invalid relativePath or mimeType: $relativePath, $mimeType")
+                Log.e(TAG, "Failed to create media file: Invalid relativePath or mimeType")
                 null
             }
         }.getOrElse { e ->
@@ -356,15 +340,23 @@ class AndroidMediaStore(private val activity: Activity) {
 
     fun createMediaFile(
         context: Context,
+        requestId: String,
         displayName: String,
         data: ByteArray,
         mimeType: String? = null
     ): Any? {
         return runCatching {
             val mime = mimeType ?: getMimeTypeFromBytes(data)
-            val relativePath = mime?.let { getRelativeForMimeType(mime) }
-            
+            var relativePath = mime?.let { getRelativeForMimeType(mime) }
+
             if (mime != null && relativePath != null) {
+                val collection = getCollectionForMimeType(mime)
+                if (collection == MediaStore.Downloads.EXTERNAL_CONTENT_URI &&
+                    !relativePath.startsWith(Environment.DIRECTORY_DOWNLOADS)
+                ) {
+                    relativePath = "${Environment.DIRECTORY_DOWNLOADS}/$relativePath"
+                }
+
                 val uri = findOrCreateMediaStoreEntry(context, null, MediaDetails(displayName, mime, relativePath))
                 if (uri != null) {
                     try {
@@ -372,17 +364,11 @@ class AndroidMediaStore(private val activity: Activity) {
                         clearPending(context, uri)
                         uri
                     } catch (e: SecurityException) {
-                        handleSecurityExceptionForWrite(context, e, uri, data = data)
+                        handleSecurityExceptionForWrite(context, e, requestId, uri, data = data)
                         "PENDING_AUTH"
                     }
-                } else {
-                    Log.e(TAG, "Failed to create media entry at $relativePath: $displayName, $mimeType")
-                    null
-                }
-            } else {
-                Log.e(TAG, "Failed to create media file: Invalid relativePath and mimeType")
-                null
-            }
+                } else null
+            } else null
         }.getOrElse { e ->
             Log.e(TAG, "Error creating media file: ${e.message}", e)
             null
@@ -391,6 +377,7 @@ class AndroidMediaStore(private val activity: Activity) {
 
     fun copyMediaFileToRelative(
         context: Context,
+        requestId: String,
         displayName: String,
         sourcePathOrUri: String,
         relativePath: String? = null,
@@ -398,14 +385,19 @@ class AndroidMediaStore(private val activity: Activity) {
     ): Any? {
         return runCatching {
             val sourceUri = resolveUriFromString(context, sourcePathOrUri)
-            val mime = mimeType ?: sourceUri?.let { context.contentResolver.getType(it) }
-                ?: getMimeTypeFromFile(context, File(sourcePathOrUri))
-            val relative = relativePath?.let { validateRelativePath(it) } ?: mime?.let { getRelativeForMimeType(it) }
+            val mime = mimeType ?: sourceUri?.let { context.contentResolver.getType(it) } ?: getMimeTypeFromFile(context, File(sourcePathOrUri))
+            var relative = relativePath?.let { validateRelativePath(it) } ?: mime?.let { getRelativeForMimeType(it) }
+
+            if (relative != null && mime != null) {
+                val collection = getCollectionForMimeType(mime)
+                if (collection == MediaStore.Downloads.EXTERNAL_CONTENT_URI && !relative.startsWith(Environment.DIRECTORY_DOWNLOADS)) {
+                    relative = "${Environment.DIRECTORY_DOWNLOADS}/$relative"
+                }
+            }
 
             if (relative == null || sourceUri == null || mime == null) return@runCatching null
 
-            val destinationUri = findOrCreateMediaStoreEntry(context, null, MediaDetails(displayName, mime, relative))
-            if (destinationUri == null) return@runCatching null
+            val destinationUri = findOrCreateMediaStoreEntry(context, null, MediaDetails(displayName, mime, relative)) ?: return@runCatching null
 
             try {
                 context.contentResolver.openInputStream(sourceUri)?.use { input ->
@@ -416,17 +408,18 @@ class AndroidMediaStore(private val activity: Activity) {
                 clearPending(context, destinationUri)
                 return@runCatching destinationUri
             } catch (e: SecurityException) {
-                handleSecurityExceptionForWrite(context, e, destinationUri, sourceUri = sourceUri)
+                handleSecurityExceptionForWrite(context, e, requestId, destinationUri, sourceUri = sourceUri)
                 "PENDING_AUTH"
             }
         }.getOrElse { e ->
-            Log.e(TAG, "Error creating media file: ${e.message}", e)
+            Log.e(TAG, "Error copying media file: ${e.message}", e)
             null
         }
     }
 
     fun copyMediaFileToPathOrUri(
         context: Context,
+        requestId: String,
         toPathOrUri: String,
         fromPathOrUri: String,
         mimeType: String? = null
@@ -437,8 +430,7 @@ class AndroidMediaStore(private val activity: Activity) {
             val collection = getStorageCollection(context, toUri.toString())
             if (toUri == null || fromUri == null || collection == null) return null
 
-            val destinationUri = findOrCreateMediaStoreEntry(context, toUri.toString())
-            if (destinationUri == null) return@runCatching null
+            val destinationUri = findOrCreateMediaStoreEntry(context, toUri.toString()) ?: return@runCatching null
 
             try {
                 context.contentResolver.openInputStream(fromUri)?.use { input ->
@@ -449,7 +441,7 @@ class AndroidMediaStore(private val activity: Activity) {
                 clearPending(context, destinationUri)
                 return@runCatching destinationUri
             } catch (e: SecurityException) {
-                handleSecurityExceptionForWrite(context, e, destinationUri, sourceUri = fromUri)
+                handleSecurityExceptionForWrite(context, e, requestId, destinationUri, sourceUri = fromUri)
                 "PENDING_AUTH"
             }
         }.getOrElse { e ->
@@ -458,65 +450,63 @@ class AndroidMediaStore(private val activity: Activity) {
         }
     }
 
-    fun executePendingWriteOperations(): List<Uri>? {
-        val operations = pendingWriteOperations.toList()
-        pendingWriteOperations.clear()
+    // ────────────────────────────────────────────────
+    // CONCURRENCY & RESULT HELPERS
+    // ────────────────────────────────────────────────
+
+    fun isPendingWrite(requestCode: Int): Boolean = pendingWrites.containsKey(requestCode)
+    fun isPendingDelete(requestCode: Int): Boolean = pendingDeletes.containsKey(requestCode)
+
+    fun executePendingWriteOperation(requestCode: Int): Pair<String, Uri?>? {
+        val operation = pendingWrites.remove(requestCode) ?: return null
+        var finalUri: Uri? = operation.destinationUri
         
-        operations.forEach { operation ->
-            runCatching {
-                when {
-                    operation.tempFile != null -> {
-                        activity.contentResolver.openOutputStream(operation.destinationUri, "wt")?.use { out ->
-                            operation.tempFile.inputStream().use { it.copyTo(out) }
-                        }
-                        operation.tempFile.delete() // Clean up temp file
-                        clearPending(activity, operation.destinationUri)
-                        operation.onSuccess?.invoke(operation.destinationUri)
+        runCatching {
+            when {
+                operation.tempFile != null -> {
+                    activity.contentResolver.openOutputStream(operation.destinationUri, "wt")?.use { out ->
+                        operation.tempFile.inputStream().use { it.copyTo(out) }
                     }
-                    operation.sourceUri != null -> {
-                        activity.contentResolver.openInputStream(operation.sourceUri)?.use { input ->
-                            activity.contentResolver.openOutputStream(operation.destinationUri, "wt")?.use { output ->
-                                input.copyTo(output)
-                            }
-                        }
-                        clearPending(activity, operation.destinationUri)
-                        operation.onSuccess?.invoke(operation.destinationUri)
-                    }
-                    else -> throw IOException("No data source provided")
+                    operation.tempFile.delete() // Clean up temp file
+                    clearPending(activity, operation.destinationUri)
                 }
-            }.onFailure { e ->
-                Log.e(TAG, "Error executing write operation: ${e.message}", e)
-                operation.onFail?.invoke(e as Exception)
+                operation.sourceUri != null -> {
+                    activity.contentResolver.openInputStream(operation.sourceUri)?.use { input ->
+                        activity.contentResolver.openOutputStream(operation.destinationUri, "wt")?.use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    clearPending(activity, operation.destinationUri)
+                }
+                else -> throw IOException("No data source provided")
             }
+        }.onFailure { e ->
+            Log.e(TAG, "Error executing write operation: ${e.message}", e)
+            finalUri = null // Instructs plugin to throw an error back to Dart
         }
-        return operations.map { it.destinationUri }.takeIf { it.isNotEmpty() }
+        return Pair(operation.requestId, finalUri)
     }
 
-    fun executePendingDeleteOperations(): Boolean {
-        val operations = pendingDeleteOperations.toList()
-        pendingDeleteOperations.clear()
-        Log.d(TAG, "Execute Pending Delete Operations: ${operations.size}")
-        return operations.all { operation ->
-            runCatching {
-                var deleted = activity.contentResolver.delete(operation.uri, null, null) > 0
-                if (deleted) {
-                    operation.onSuccess?.invoke()
-                } else {
-                    try {
-                        deleted = File(operation.uri.toString()).deleteRecursively()
-                    } catch (e: Exception) {
-                        operation.onFail?.invoke(IOException("Failed to delete file"))
-                        Log.e(TAG, "Error executing delete operation: ${e.message}", e)
-                        deleted = false
-                    }
-                }
-                deleted
-            }.getOrElse { e ->
-                Log.e(TAG, "Error executing delete operation: ${e.message}", e)
-                operation.onFail?.invoke(e as Exception)
-                false
+    fun cancelPendingWriteOperation(requestCode: Int): String? {
+        val operation = pendingWrites.remove(requestCode)
+        operation?.tempFile?.delete() // Cleanup unused temp file
+        return operation?.requestId
+    }
+
+    fun executePendingDeleteOperation(requestCode: Int): Pair<String, Boolean>? {
+        val operation = pendingDeletes.remove(requestCode) ?: return null
+        val success = runCatching {
+            var deleted = activity.contentResolver.delete(operation.uri, null, null) > 0
+            if (!deleted) {
+                deleted = File(operation.uri.toString()).deleteRecursively()
             }
-        }
+            deleted
+        }.getOrDefault(false)
+        return Pair(operation.requestId, success)
+    }
+
+    fun cancelPendingDeleteOperation(requestCode: Int): String? {
+        return pendingDeletes.remove(requestCode)?.requestId
     }
 
     // ────────────────────────────────────────────────
@@ -589,8 +579,8 @@ class AndroidMediaStore(private val activity: Activity) {
     }
 
     private fun validateRelativePath(relativePath: String): String? {
-        val relative = "${relativePath.trim('/')}/"
-        return MEDIA_DIRECTORIES[relative]
+        val key = relativePath.trim('/')
+        return MEDIA_DIRECTORIES[key]
     }
 
     private fun doesEntryExist(context: Context, uri: Uri): Boolean {
@@ -662,75 +652,60 @@ class AndroidMediaStore(private val activity: Activity) {
     private fun handleSecurityExceptionForWrite(
         context: Context,
         e: SecurityException,
+        requestId: String,
         destinationUri: Uri,
         data: ByteArray? = null,
-        sourceUri: Uri? = null,
-        onSuccess: ((Uri?) -> Unit)? = null,
-        onFail: ((Exception) -> Unit)? = null
+        sourceUri: Uri? = null
     ) {
+        val requestCode = nextRequestCode++
         val tempFile = data?.let { bytes ->
             val file = File(context.cacheDir, "pending_write_${System.currentTimeMillis()}")
             file.writeBytes(bytes)
             file
         }
         
-        pendingWriteOperations.add(WriteOperation(destinationUri, tempFile, sourceUri, onSuccess, onFail))
+        pendingWrites[requestCode] = WriteOperation(requestId, destinationUri, tempFile, sourceUri)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
                 val pendingIntent = MediaStore.createWriteRequest(context.contentResolver, listOf(destinationUri))
-                activity.startIntentSenderForResult(pendingIntent.intentSender, WRITE_REQUEST_CODE, null, 0, 0, 0, null)
+                activity.startIntentSenderForResult(pendingIntent.intentSender, requestCode, null, 0, 0, 0, null)
             } catch (ex: Exception) {
-                onFail?.invoke(ex)
+                pendingWrites.remove(requestCode)
+                tempFile?.delete()
+                throw ex
             }
         } else if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
             val rse = e as? RecoverableSecurityException
             if (rse != null) {
                 try {
-                    activity.startIntentSenderForResult(rse.userAction.actionIntent.intentSender, WRITE_REQUEST_CODE, null, 0, 0, 0, null)
+                    activity.startIntentSenderForResult(rse.userAction.actionIntent.intentSender, requestCode, null, 0, 0, 0, null)
                 } catch (ex: Exception) {
-                    onFail?.invoke(ex)
+                    pendingWrites.remove(requestCode)
+                    tempFile?.delete()
+                    throw ex
                 }
             } else {
-                onFail?.invoke(e)
+                pendingWrites.remove(requestCode)
+                tempFile?.delete()
+                throw e
             }
         } else {
-            onFail?.invoke(e)
+            pendingWrites.remove(requestCode)
+            tempFile?.delete()
+            throw e
         }
     }
 
-    private fun createDeleteRequest(
-        context: Context,
-        uri: Uri,
-        onSuccess: (() -> Unit)? = null,
-        onFail: ((Exception) -> Unit)? = null
-    ) {
-        runCatching {
-            pendingDeleteOperations.add(DeleteOperation(uri, onSuccess, onFail))
-            
-            // Validate file existence
-            context.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns._ID), null, null, null)?.use {
-                if (!it.moveToFirst()) throw Exception("Could not find requested file $uri")
-            } ?: throw Exception("Could not find requested file $uri")
-            
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                val pendingIntent = MediaStore.createDeleteRequest(context.contentResolver, listOf(uri))
-                activity.startIntentSenderForResult(
-                    pendingIntent.intentSender,
-                    DELETE_REQUEST_CODE,
-                    null, 0, 0, 0, null
-                )
-            }
-        }.onSuccess {
-            onSuccess?.invoke()
-        }.onFailure { e ->
-            when (e) {
-                is PendingIntent.CanceledException -> Log.e(TAG, "Delete permission request canceled for URI: $uri", e)
-                is SecurityException -> Log.e(TAG, "Error requesting delete permission: ${e.message}", e)
-                else -> Log.e(TAG, "Error occurred when deleting file: ${e.message}", e)
-            }
-            onFail?.invoke(e as Exception)
-        }
+    private fun createDeleteRequest(context: Context, requestId: String, uri: Uri) {
+        val requestCode = nextRequestCode++
+        pendingDeletes[requestCode] = DeleteOperation(requestId, uri)
+        val pendingIntent = MediaStore.createDeleteRequest(context.contentResolver, listOf(uri))
+        activity.startIntentSenderForResult(
+            pendingIntent.intentSender,
+            requestCode,
+            null, 0, 0, 0, null
+        )
     }
 
     private fun getMimeTypeFromFile(context: Context, file: File): String? {
@@ -754,15 +729,20 @@ class AndroidMediaStore(private val activity: Activity) {
     }
 
     private fun getCollectionForMimeType(mimeType: String?): Uri {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            when {
-                mimeType?.startsWith("image/") == true -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-                mimeType?.startsWith("video/") == true -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-                mimeType?.startsWith("audio/") == true -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-                else -> MediaStore.Downloads.EXTERNAL_CONTENT_URI
-            }
-        } else {
-            MediaStore.Files.getContentUri("external")
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return MediaStore.Files.getContentUri("external")
+        }
+
+        return when {
+            mimeType == null -> MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            mimeType.startsWith("image/") -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            mimeType.startsWith("video/") -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            mimeType.startsWith("audio/") -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+            mimeType.startsWith("text/") -> MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            mimeType == "application/pdf" -> MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            mimeType == "application/zip" -> MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            mimeType.startsWith("application/") -> MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            else -> MediaStore.Downloads.EXTERNAL_CONTENT_URI
         }
     }
 
@@ -771,6 +751,10 @@ class AndroidMediaStore(private val activity: Activity) {
             mimeType.startsWith("image/") -> Environment.DIRECTORY_PICTURES
             mimeType.startsWith("video/") -> Environment.DIRECTORY_MOVIES
             mimeType.startsWith("audio/") -> Environment.DIRECTORY_MUSIC
+            mimeType.startsWith("text/") -> Environment.DIRECTORY_DOCUMENTS
+            mimeType == "application/pdf" -> Environment.DIRECTORY_DOCUMENTS
+            mimeType == "application/zip" -> Environment.DIRECTORY_DOWNLOADS
+            mimeType.startsWith("application/") -> Environment.DIRECTORY_DOWNLOADS
             else -> Environment.DIRECTORY_DOWNLOADS
         }
     }
@@ -814,15 +798,5 @@ class AndroidMediaStore(private val activity: Activity) {
         }
 
         return fullName?.let { File(it).nameWithoutExtension }
-    }
-
-    private fun String.removePrefixIfStartsWith(prefix: String): String {
-        return if (this.startsWith("$prefix/")) {
-            this.replace("$prefix/", "")
-        } else if (this.startsWith(prefix)) {
-            this.replace(prefix, "")
-        } else {
-            this
-        }
     }
 }

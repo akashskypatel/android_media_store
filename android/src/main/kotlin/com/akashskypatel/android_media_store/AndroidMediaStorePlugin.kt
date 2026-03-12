@@ -1,3 +1,27 @@
+/*
+ * MIT License
+ * 
+ * Copyright (c) 2026 Akash Patel
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 package com.akashskypatel.android_media_store
 
 import android.app.Activity
@@ -29,6 +53,7 @@ class AndroidMediaStorePlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
     // Activity and Plugin bindings
     private var activityBinding: ActivityPluginBinding? = null
     private var mediaStore: AndroidMediaStore? = null
+    private var permissionHandler: MediaStorePermissionHandler? = null
 
     companion object {
         private const val TAG = "AndroidMediaStorePlugin"
@@ -44,6 +69,7 @@ class AndroidMediaStorePlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         activityBinding = binding
         mediaStore = AndroidMediaStore(binding.activity)
+        permissionHandler = MediaStorePermissionHandler(binding.activity)
         binding.addActivityResultListener(this)
     }
 
@@ -56,7 +82,6 @@ class AndroidMediaStorePlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
             return
         }
 
-        // Run all MethodChannel calls on an IO Coroutine to prevent UI Thread ANR crashes
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 when (call.method) {
@@ -84,16 +109,6 @@ class AndroidMediaStorePlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                         withContext(Dispatchers.Main) { result.success(path) }
                     }
 
-                    "editMediaFile" -> {
-                        val pathOrUri = call.argument<String>("pathOrUri")!!
-                        val data = call.argument<ByteArray>("data")!!
-                        val mime = call.argument<String?>("mimeType")
-                        val res = store.editMediaFile(context, pathOrUri, data)
-                        // If it's a URI, convert to String. If it's "PENDING_AUTH", leave as String.
-                        val returnData = if (res is Uri) res.toString() else res
-                        withContext(Dispatchers.Main) { result.success(returnData) }
-                    }
-
                     "getReadableMediaFilePath" -> {
                         val pathOrUri = call.argument<String>("pathOrUri")!!
                         val path = store.getReadableMediaFilePath(context, pathOrUri)
@@ -116,48 +131,73 @@ class AndroidMediaStorePlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
                         }
                     }
 
-                    "deleteMediaFile" -> {
+                    // ─── METHODS REQUIRING CONCURRENT CALLBACKS (Uses requestId) ───
+
+                    "editMediaFile" -> {
+                        val requestId = call.argument<String>("requestId")!!
                         val pathOrUri = call.argument<String>("pathOrUri")!!
-                        val success = store.deleteMediaFile(context, pathOrUri)
+                        val data = call.argument<ByteArray>("data")!!
+                        val mime = call.argument<String?>("mimeType")
+                        val res = store.editMediaFile(context, requestId, pathOrUri, data)
+                        val returnData = if (res is Uri) res.toString() else res
+                        withContext(Dispatchers.Main) { result.success(returnData) }
+                    }
+
+                    "deleteMediaFile" -> {
+                        val requestId = call.argument<String>("requestId")!!
+                        val pathOrUri = call.argument<String>("pathOrUri")!!
+                        val success = store.deleteMediaFile(context, requestId, pathOrUri)
                         withContext(Dispatchers.Main) { result.success(success) }
                     }
 
                     "createMediaFileAtRelative" -> {
+                        val requestId = call.argument<String>("requestId")!!
                         val displayName = call.argument<String>("displayName")!!
                         val relativePath = call.argument<String?>("relativePath")
                         val data = call.argument<ByteArray>("data")!!
                         val mime = call.argument<String?>("mimeType")
-                        val res = store.createMediaFileAtRelative(context, displayName, relativePath, data, mime)
+                        val res = store.createMediaFileAtRelative(context, requestId, displayName, relativePath, data, mime)
                         val returnData = if (res is Uri) res.toString() else res
                         withContext(Dispatchers.Main) { result.success(returnData) }
                     }
 
                     "createMediaFile" -> {
+                        val requestId = call.argument<String>("requestId")!!
                         val displayName = call.argument<String>("displayName")!!
                         val data = call.argument<ByteArray>("data")!!
                         val mime = call.argument<String?>("mimeType")
-                        val res = store.createMediaFile(context, displayName, data, mime)
+                        val res = store.createMediaFile(context, requestId, displayName, data, mime)
                         val returnData = if (res is Uri) res.toString() else res
                         withContext(Dispatchers.Main) { result.success(returnData) }
                     }
 
                     "copyMediaFileToRelative" -> {
+                        val requestId = call.argument<String>("requestId")!!
                         val pathOrUri = call.argument<String>("pathOrUri")!!
                         val displayName = call.argument<String>("displayName")!!
                         val relativePath = call.argument<String?>("relativePath")
                         val mime = call.argument<String?>("mimeType")
-                        val res = store.copyMediaFileToRelative(context, displayName, pathOrUri, relativePath, mime)
+                        val res = store.copyMediaFileToRelative(context, requestId, displayName, pathOrUri, relativePath, mime)
                         val returnData = if (res is Uri) res.toString() else res
                         withContext(Dispatchers.Main) { result.success(returnData) }
                     }
 
                     "copyMediaFileToPathOrUri" -> {
+                        val requestId = call.argument<String>("requestId")!!
                         val toPathOrUri = call.argument<String>("toPathOrUri")!!
                         val fromPathOrUri = call.argument<String>("fromPathOrUri")!!
                         val mime = call.argument<String?>("mimeType")
-                        val res = store.copyMediaFileToPathOrUri(context, toPathOrUri, fromPathOrUri, mime)
+                        val res = store.copyMediaFileToPathOrUri(context, requestId, toPathOrUri, fromPathOrUri, mime)
                         val returnData = if (res is Uri) res.toString() else res
                         withContext(Dispatchers.Main) { result.success(returnData) }
+                    }
+
+                    "canManageMedia" -> {
+                        result.success(permissionHandler?.canManageMedia() ?: false)
+                    }
+                    
+                    "requestManageMedia" -> {
+                        permissionHandler?.requestManageMedia(result)
                     }
 
                     else -> {
@@ -177,65 +217,74 @@ class AndroidMediaStorePlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
         val store = mediaStore ?: return false
 
-        when (requestCode) {
-            store.DELETE_REQUEST_CODE -> {
-                CoroutineScope(Dispatchers.IO).launch {
-                    try {
-                        when (resultCode) {
-                            Activity.RESULT_OK -> {
-                                val actualSuccess = store.executePendingDeleteOperations()
-                                withContext(Dispatchers.Main) {
-                                    channel.invokeMethod(store.DELETE_REQUEST_NOTIFY, actualSuccess)
-                                }
-                            }
-                            else -> {
-                                withContext(Dispatchers.Main) {
-                                    channel.invokeMethod(store.DELETE_REQUEST_NOTIFY, false)
-                                }
-                            }
-                        }
-                    } catch (e: Exception) {
+        // Check if the request is a known DELETE operation
+        if (store.isPendingDelete(requestCode)) {
+            CoroutineScope(Dispatchers.IO).launch {
+                if (resultCode == Activity.RESULT_OK) {
+                    val opResult = store.executePendingDeleteOperation(requestCode)
+                    if (opResult != null) {
                         withContext(Dispatchers.Main) {
-                            channel.invokeMethod(store.DELETE_REQUEST_NOTIFY, false)
+                            channel.invokeMethod("notifyDeleteComplete", mapOf(
+                                "requestId" to opResult.first,
+                                "success" to opResult.second
+                            ))
+                        }
+                    }
+                } else {
+                    val reqId = store.cancelPendingDeleteOperation(requestCode)
+                    if (reqId != null) {
+                        withContext(Dispatchers.Main) {
+                            channel.invokeMethod("notifyDeleteComplete", mapOf(
+                                "requestId" to reqId,
+                                "success" to false
+                            ))
                         }
                     }
                 }
-                return true
             }
-
-            store.WRITE_REQUEST_CODE -> {
-                CoroutineScope(Dispatchers.IO).launch {
-                    try {
-                        when (resultCode) {
-                            Activity.RESULT_OK -> {
-                                val uris = store.executePendingWriteOperations()
-                                val uriStrings = uris?.map { it.toString() }
-                                withContext(Dispatchers.Main) {
-                                    channel.invokeMethod(store.WRITE_REQUEST_NOTIFY, uriStrings)
-                                }
-                            }
-                            else -> {
-                                withContext(Dispatchers.Main) {
-                                    channel.invokeMethod(store.WRITE_REQUEST_NOTIFY, null)
-                                }
-                            }
-                        }
-                    } catch (e: Exception) {
-                        withContext(Dispatchers.Main) {
-                            channel.invokeMethod(store.WRITE_REQUEST_NOTIFY, null)
-                        }
-                    }
-                }
-                return true
-            }
+            return true
         }
+
+        // Check if the request is a known WRITE operation
+        if (store.isPendingWrite(requestCode)) {
+            CoroutineScope(Dispatchers.IO).launch {
+                if (resultCode == Activity.RESULT_OK) {
+                    val opResult = store.executePendingWriteOperation(requestCode)
+                    if (opResult != null) {
+                        withContext(Dispatchers.Main) {
+                            channel.invokeMethod("notifyCreateComplete", mapOf(
+                                "requestId" to opResult.first,
+                                "uri" to opResult.second?.toString()
+                            ))
+                        }
+                    }
+                } else {
+                    val reqId = store.cancelPendingWriteOperation(requestCode)
+                    if (reqId != null) {
+                        withContext(Dispatchers.Main) {
+                            channel.invokeMethod("notifyCreateComplete", mapOf(
+                                "requestId" to reqId,
+                                "uri" to null
+                            ))
+                        }
+                    }
+                }
+            }
+            return true
+        }
+
+        // Check if it's the Manage Media permission request
+        if (requestCode == MediaStorePermissionHandler.REQUEST_CODE_MANAGE_MEDIA) {
+            channel.invokeMethod("onManageMediaPermissionResult", permissionHandler?.canManageMedia())
+            return true
+        }
+
         return false // Return false if the request code doesn't belong to our plugin
     }
 
     override fun onDetachedFromActivityForConfigChanges() {
         activityBinding?.removeActivityResultListener(this)
         activityBinding = null
-        mediaStore = null
     }
 
     @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
@@ -247,6 +296,7 @@ class AndroidMediaStorePlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
         activityBinding?.removeActivityResultListener(this)
         activityBinding = null
         mediaStore = null
+        permissionHandler = null
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
