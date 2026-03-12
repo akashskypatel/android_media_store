@@ -195,12 +195,3 @@ Contributions are welcome! Please see the [contributing guidelines](CONTRIBUTING
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
-
----
-
-This README provides a solid foundation for your plugin. Remember to:
-
-*   **Update it regularly:** Keep the documentation in sync with your code changes.
-*   **Link to your contributing guidelines:** If you're actively developing, this makes it easier for others to submit pull requests.
-*   **Add a CHANGELOG.md file:** This helps users understand the history of the plugin and what has changed in each version.
-*   **Test thoroughly:** Make sure the example app is working correctly on multiple Android versions.
