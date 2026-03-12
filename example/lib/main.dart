@@ -28,11 +28,17 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:android_media_store/android_media_store.dart';
 
+/// Entry point for the Android Media Store example application.
 void main() => runApp(const MaterialApp(
       home: MediaStoreExample(),
       debugShowCheckedModeBanner: false,
     ));
 
+/// A comprehensive example widget demonstrating the capabilities of the
+/// [AndroidMediaStore] plugin.
+///
+/// This screen provides a UI to interact with various MediaStore operations
+/// while handling the complexities of Android Scoped Storage and permissions.
 class MediaStoreExample extends StatefulWidget {
   const MediaStoreExample({super.key});
 
@@ -41,10 +47,15 @@ class MediaStoreExample extends StatefulWidget {
 }
 
 class _MediaStoreExampleState extends State<MediaStoreExample> {
+  /// The singleton instance of the plugin.
   final _mediaStore = AndroidMediaStore.instance;
+  
+  /// Subscription to listen for the "Manage Media" permission state changes.
   late StreamSubscription<bool> _permissionStreamSub;
 
   String _status = 'Ready';
+  
+  /// Tracks the URI of the last created or modified file to perform operations on it.
   String? _targetUri; // Single source of truth for the currently active file
 
   @override
@@ -52,7 +63,8 @@ class _MediaStoreExampleState extends State<MediaStoreExample> {
     super.initState();
     _initializePlugin();
 
-    // IMPROVEMENT: React automatically to manage media permission changes
+    // Listen for changes to the Special 'MANAGE_MEDIA' permission. 
+    // This is useful when the user returns from the system settings screen.
     _permissionStreamSub = _mediaStore.onManageMediaPermissionChanged.listen((isGranted) {
       if (mounted) {
         setState(() {
@@ -73,6 +85,9 @@ class _MediaStoreExampleState extends State<MediaStoreExample> {
     super.dispose();
   }
 
+  /// Ensures the plugin is ready for use.
+  /// 
+  /// On Android, this sets up the necessary MethodCallHandler for native callbacks.
   Future<void> _initializePlugin() async {
     try {
       await AndroidMediaStore.ensureInitialized();
@@ -87,6 +102,11 @@ class _MediaStoreExampleState extends State<MediaStoreExample> {
   // PERMISSION HELPERS
   // ------------------------------------------------------------------
 
+  /// Handles the two-step permission process required for full MediaStore access.
+  /// 
+  /// 1. Standard granular permissions (Images, Video, etc.) via permission_handler.
+  /// 2. The Special "Manage Media" permission (Android 12+) via this plugin, 
+  ///    which allows editing/deleting files without constant user prompts.
   Future<void> _checkPermissions({bool silent = false}) async {
     if (!silent) setState(() => _status = 'Checking permissions...');
     try {
@@ -116,7 +136,7 @@ class _MediaStoreExampleState extends State<MediaStoreExample> {
   // PLUGIN DEMO OPERATIONS
   // ------------------------------------------------------------------
 
-  // 1. Get Platform Version
+  /// Retrieves the Android SDK version from the native side.
   Future<void> _getPlatformVersion() async {
     setState(() => _status = 'Getting platform version...');
     try {
@@ -127,7 +147,8 @@ class _MediaStoreExampleState extends State<MediaStoreExample> {
     }
   }
 
-  // 2. Create a file (automatic directory based on MIME)
+  /// Creates a text file using automatic directory resolution.
+  /// The plugin will place 'text/plain' files in the 'Download/' or 'Documents/' directory.
   Future<void> _createFile() async {
     setState(() => _status = 'Creating file...');
     try {
@@ -146,7 +167,7 @@ class _MediaStoreExampleState extends State<MediaStoreExample> {
     }
   }
 
-  // 3. Create file at specific relative path
+  /// Demonstrates creating a file in a specific subdirectory within the MediaStore.
   Future<void> _createFileAtRelative() async {
     setState(() => _status = 'Creating file at Documents...');
     try {
@@ -167,7 +188,9 @@ class _MediaStoreExampleState extends State<MediaStoreExample> {
     }
   }
 
-  // 4. Read file
+  /// Reads the content of the active [_targetUri].
+  /// Note: The plugin automatically handles the 1MB Binder transaction limit 
+  /// by falling back to streaming for larger files.
   Future<void> _readFile() async {
     if (_targetUri == null) {
       setState(() => _status = 'No file to read. Create one first.');
@@ -183,7 +206,9 @@ class _MediaStoreExampleState extends State<MediaStoreExample> {
     }
   }
 
-  // 5. Get readable file path (creates cache copy)
+  /// Demonstrates how to get a physical File path from a content URI.
+  /// This is essential for compatibility with legacy packages that don't support
+  /// `content://` URIs. The plugin streams the file into the app's cache.
   Future<void> _getReadablePath() async {
     if (_targetUri == null) {
       setState(() => _status = 'No file to get path for. Create one first.');
@@ -198,7 +223,9 @@ class _MediaStoreExampleState extends State<MediaStoreExample> {
     }
   }
 
-  // 6. Edit file
+  /// Overwrites the content of the active [_targetUri].
+  /// If the app doesn't own the file, the Android system will automatically
+  /// show a confirmation dialog.
   Future<void> _editFile() async {
     if (_targetUri == null) {
       setState(() => _status = 'No file to edit. Create one first.');
@@ -214,7 +241,7 @@ class _MediaStoreExampleState extends State<MediaStoreExample> {
     }
   }
 
-  // 7. Copy file to relative path
+  /// Creates a copy of the active file in the 'Download/' directory.
   Future<void> _copyToRelative() async {
     if (_targetUri == null) {
       setState(() => _status = 'No file to copy. Create one first.');
@@ -237,7 +264,8 @@ class _MediaStoreExampleState extends State<MediaStoreExample> {
     }
   }
 
-  // 8. Convert URI to Path, then test Path to URI (Fix for hardcoded paths)
+  /// Demonstrates the bi-directional mapping between File System paths 
+  /// and MediaStore URIs.
   Future<void> _testPathConversions() async {
     if (_targetUri == null) {
       setState(() => _status = 'No URI to convert. Create a file first.');
@@ -257,7 +285,9 @@ class _MediaStoreExampleState extends State<MediaStoreExample> {
     }
   }
 
-  // 9. Delete file
+  /// Deletes the active file.
+  /// On Android 11+, if the file isn't owned by the app, this will trigger 
+  /// a system confirmation dialog.
   Future<void> _deleteFile() async {
     if (_targetUri == null) {
       setState(() => _status = 'No file to delete. Create or copy one first.');
