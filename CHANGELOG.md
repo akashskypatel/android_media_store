@@ -1,3 +1,8 @@
+## 0.0.3
+
+* Added platform checks to Dart bridge methods to prevent `MissingPluginException` on non-Android platforms.
+* Updated example `pubspec.yaml` SDK constraints for consistency.
+
 ## 0.0.2
 
 * Fix `README`

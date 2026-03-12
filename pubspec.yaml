@@ -1,6 +1,7 @@
 name: android_media_store
 description: "A modern Flutter plugin for safe Android MediaStore and Scoped Storage management. Handles content:// URIs, large file streaming, and automatic permissions."
-version: 0.0.2
+version: 0.0.3
+homepage: https://github.com/akashskypatel/android_media_store
 repository: https://github.com/akashskypatel/android_media_store
 issue_tracker: https://github.com/akashskypatel/android_media_store/issues
 

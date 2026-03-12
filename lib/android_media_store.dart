@@ -170,6 +170,7 @@ class AndroidMediaStore {
 
   /// Retrieves the current Android SDK version string.
   Future<String?> getPlatformVersion() async {
+    if (!Platform.isAndroid) return null;
     return await mediaChannel.invokeMethod('getPlatformVersion');
   }
 
@@ -241,6 +242,7 @@ class AndroidMediaStore {
   /// Returns `true` if the native plugin side has finished its setup.
   /// Throws [AndroidMediaStoreException] if the channel is unreachable.
   static Future<bool?> isChannelInitialized() async {
+    if (!Platform.isAndroid) return false;
     try {
       return await mediaChannel.invokeMethod('isInitialized');
     } on PlatformException catch (e) {
@@ -253,6 +255,7 @@ class AndroidMediaStore {
   /// Providing a [mimeType] (e.g., 'image/jpeg') significantly improves the
   /// lookup accuracy and speed. Returns `null` if the path cannot be mapped.
   Future<String?> pathToUri(String path, {String? mimeType}) async {
+    if (!Platform.isAndroid) return null;
     try {
       await ensureInitialized();
       return await mediaChannel.invokeMethod('pathToUri', {
@@ -269,6 +272,7 @@ class AndroidMediaStore {
   /// Note: On Android 10+, returned paths may have restricted access.
   /// Use [getReadableMediaFilePath] for reliable read access.
   Future<String?> uriToPath(String uri) async {
+    if (!Platform.isAndroid) return null;
     try {
       await ensureInitialized();
       return await mediaChannel.invokeMethod('uriToPath', {'uri': uri});
@@ -286,6 +290,7 @@ class AndroidMediaStore {
   /// **Warning:** You are responsible for deleting the file at the returned path
   /// once you are finished with it to prevent storage bloat.
   Future<String?> getReadableMediaFilePath(String pathOrUri) async {
+    if (!Platform.isAndroid) return null;
     try {
       await ensureInitialized();
       return await mediaChannel.invokeMethod('getReadableMediaFilePath', {
@@ -305,6 +310,7 @@ class AndroidMediaStore {
   ///
   /// Returns a [Uint8List] of the file content, or `null` if the file is inaccessible.
   Future<Uint8List?> readMediaFile(String pathOrUri, {String? mimeType}) async {
+    if (!Platform.isAndroid) return null;
     try {
       await ensureInitialized();
       return await mediaChannel.invokeMethod<Uint8List>('readMediaFile', {
@@ -345,6 +351,7 @@ class AndroidMediaStore {
     void Function(String?)? onSuccess,
     void Function(Exception)? onFail,
   }) async {
+    if (!Platform.isAndroid) return null;
     await ensureInitialized();
     final reqId = _generateRequestId();
     final operation = MediaOperation<String?>();
@@ -394,6 +401,7 @@ class AndroidMediaStore {
     void Function(bool)? onSuccess,
     void Function(Exception)? onFail,
   }) async {
+    if (!Platform.isAndroid) return false;
     await ensureInitialized();
     final reqId = _generateRequestId();
     final operation = MediaOperation<bool>();
@@ -446,6 +454,7 @@ class AndroidMediaStore {
     void Function(String?)? onSuccess,
     void Function(Exception)? onFail,
   }) async {
+    if (!Platform.isAndroid) return null;
     await ensureInitialized();
     final reqId = _generateRequestId();
     final operation = MediaOperation<String?>();
@@ -497,6 +506,7 @@ class AndroidMediaStore {
     void Function(String?)? onSuccess,
     void Function(Exception)? onFail,
   }) async {
+    if (!Platform.isAndroid) return null;
     await ensureInitialized();
     final reqId = _generateRequestId();
     final operation = MediaOperation<String?>();
@@ -548,6 +558,7 @@ class AndroidMediaStore {
     void Function(String?)? onSuccess,
     void Function(Exception)? onFail,
   }) async {
+    if (!Platform.isAndroid) return null;
     await ensureInitialized();
     final reqId = _generateRequestId();
     final operation = MediaOperation<String?>();
@@ -599,6 +610,7 @@ class AndroidMediaStore {
     void Function(String?)? onSuccess,
     void Function(Exception)? onFail,
   }) async {
+    if (!Platform.isAndroid) return null;
     await ensureInitialized();
     final reqId = _generateRequestId();
     final operation = MediaOperation<String?>();
@@ -642,6 +654,7 @@ class AndroidMediaStore {
   /// media files without showing a confirmation dialog for every single file.
   /// Returns `true` on older Android versions as the permission is not applicable.
   Future<bool> canManageMedia() async {
+    if (!Platform.isAndroid) return false;
     try {
       await ensureInitialized();
       return await mediaChannel.invokeMethod('canManageMedia') ?? false;
@@ -656,6 +669,7 @@ class AndroidMediaStore {
   /// use [onManageMediaPermissionChanged] to be notified when the user grants
   /// the permission and returns to your app.
   Future<void> requestManageMedia() async {
+    if (!Platform.isAndroid) return;
     try {
       await ensureInitialized();
       await mediaChannel.invokeMethod('requestManageMedia');
