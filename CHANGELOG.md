@@ -1,3 +1,12 @@
+
+## 0.0.4
+
+* Updated to plugins DSL and removed buildscript block
+* Added AGP version check for Kotlin plugin
+* Updated Flutter SDK requirements to >=3.44.0
+* Updated Dart SDK requirements to ^3.12.0
+* Removed legacy kotlinOptions in favor of compilerOptions API
+
 ## 0.0.3
 
 * Added platform checks to Dart bridge methods to prevent `MissingPluginException` on non-Android platforms.

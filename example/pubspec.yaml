@@ -1,6 +1,6 @@
 name: android_media_store_example
 description: "Demonstrates how to use the android_media_store plugin."
-version: 0.0.1
+version: 0.0.2
 publish_to: 'none'
 
 environment:
